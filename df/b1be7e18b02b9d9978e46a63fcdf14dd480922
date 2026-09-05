@@ -1,0 +1,35 @@
+packages/ui/src/pages/home/components/routing.tsx
+  s_5968d1750f1bcf::t_8f25404d4576a1 287-299
+packages/core/src/gateway/upstream/executor.ts
+  s_5968d1750f1bcf::t_10aee876738b01 25
+  s_5968d1750f1bcf::t_a043deaf3a0ea5 471,478-483,492,508
+  s_5968d1750f1bcf::t_b828e62b06006b 1175-1349,1353-1375
+  s_5968d1750f1bcf::t_6532cd0f799828 1350-1352
+packages/core/src/contracts/app.ts
+  s_5968d1750f1bcf::t_8003999e736265 742-747
+packages/core/test/unit/gateway/upstream-executor.test.mjs
+  s_5968d1750f1bcf::t_10650828d3627e 477-668
+packages/ui/src/pages/home/shared/routing.ts
+  s_5968d1750f1bcf::t_828213c829257c 87-89
+  s_5968d1750f1bcf::t_76739b50e30532 90
+packages/core/src/config/default-config.ts
+  s_5968d1750f1bcf::t_0d1fe014c8a2d7 45
+packages/ui/src/pages/home/shared/i18n.tsx
+  s_5968d1750f1bcf::t_f3be3af38c1db7 1092-1093
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "dfb1be7e18b02b9d9978e46a63fcdf14dd480922",
+  "prompts": {},
+  "sessions": {
+    "s_5968d1750f1bcf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ea6494f-df09-4db8-8313-7b61e2d8ce21",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
