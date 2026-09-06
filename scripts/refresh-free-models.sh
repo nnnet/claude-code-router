@@ -42,6 +42,9 @@
 #   CCR_POOL_ENV_PREFIX  префикс поиска ключей      (по умолчанию OPENROUTER_API_KEY)
 #   CCR_POOL_LIMITS      limits JSON каждому ключу  (по умолчанию {"rpm":20,"rpd":50})
 #   CCR_SKIP_POOL=1      не трогать credentials вообще
+#   CCR_POOL_ALLOW_DUPLICATES=1  не схлопывать переменные с одинаковым значением
+#                        (по умолчанию копии одного ключа сводятся в один
+#                        credential — запаса лимитов они всё равно не дают)
 #   CCR_URL              адрес management-сервера   (по умолчанию http://127.0.0.1:3458)
 #   CCR_COMPOSE_SERVICE  имя сервиса в compose      (по умолчанию ccr)
 #   CCR_BACKUP_DIR       куда класть бэкапы конфига (по умолчанию <проект>/.ccr-config-backups)
@@ -56,6 +59,7 @@ COMPOSE_SERVICE="${CCR_COMPOSE_SERVICE:-ccr}"
 BACKUP_DIR="${CCR_BACKUP_DIR:-$PROJECT_DIR/.ccr-config-backups}"
 DRY_RUN="${CCR_DRY_RUN:-0}"
 SKIP_POOL="${CCR_SKIP_POOL:-0}"
+ALLOW_DUP="${CCR_POOL_ALLOW_DUPLICATES:-0}"
 ENV_PREFIX="${CCR_POOL_ENV_PREFIX:-OPENROUTER_API_KEY}"
 # Дефолт под бесплатный тариф OpenRouter: 20 запросов/мин, 50 запросов/сутки.
 # С пополнением от $10 lifetime суточный лимит аккаунта — 1000.
@@ -184,26 +188,52 @@ else
     printf '%s\n' "${key_names[@]}" > "$TMP/names.txt"
     jq -R -s -c 'split("\n") | map(select(length > 0))' "$TMP/names.txt" > "$TMP/names.json"
 
-    # Пустые значения отбрасываются, одинаковые секреты схлопываются в один
-    # credential: ротация по дублям смысла не имеет, лимит у них всё равно общий.
-    jq -c --argjson limits "$POOL_LIMITS" --arg prefix "$MANAGED_PREFIX" '
-      map({
-        name: .,
-        secret: ($ENV[.] // "" | sub("^\\s+"; "") | sub("\\s+$"; "")),
-        id: ($prefix + (ascii_downcase | gsub("[^a-z0-9]+"; "-")))
-      })
-      | map(select(.secret != ""))
-      | reduce .[] as $row ([]; if any(.[]; .secret == $row.secret) then . else . + [$row] end)
-      | map({
-          api_key: .secret,
-          enabled: true,
-          id: .id,
-          limits: $limits,
-          name: .name,
-          priority: 1,
-          weight: 1
-        })
-    ' "$TMP/names.json" > "$TMP/managed.json"
+    # Пустые значения отбрасываются. Переменные с ОДИНАКОВЫМ значением по
+    # умолчанию схлопываются в один credential: копии одного ключа делят общий
+    # лимит, ротировать между ними нечего. CCR_POOL_ALLOW_DUPLICATES=1 оставляет
+    # их отдельными записями — например чтобы посмотреть ротацию в UI.
+    jq -c --argjson limits "$POOL_LIMITS" --arg prefix "$MANAGED_PREFIX" \
+          --arg allow_dup "$ALLOW_DUP" '
+      [ .[] | {
+          name: .,
+          secret: ($ENV[.] // "" | sub("^\\s+"; "") | sub("\\s+$"; "")),
+          id: ($prefix + (ascii_downcase | gsub("[^a-z0-9]+"; "-")))
+        } ] as $rows
+      | ($rows | map(select(.secret != ""))) as $filled
+      | ($filled
+         | reduce .[] as $row ([]; if any(.[]; .secret == $row.secret) then . else . + [$row] end)
+        ) as $unique
+      | {
+          empty: ($rows | map(select(.secret == "") | .name)),
+          duplicates: (($filled | map(.name)) - ($unique | map(.name))),
+          pool: ((if $allow_dup == "1" then $filled else $unique end)
+                 | map({
+                     api_key: .secret,
+                     enabled: true,
+                     id: .id,
+                     limits: $limits,
+                     name: .name,
+                     priority: 1,
+                     weight: 1
+                   }))
+        }
+    ' "$TMP/names.json" > "$TMP/collected.json"
+    jq -c '.pool' "$TMP/collected.json" > "$TMP/managed.json"
+
+    # Отчёт о выброшенном: молчаливая потеря переменной выглядит как баг сбора.
+    empty_names="$(jq -r '.empty | join(", ")' "$TMP/collected.json")"
+    dup_names="$(jq -r '.duplicates | join(", ")' "$TMP/collected.json")"
+    [[ -z "$empty_names" ]] || warn "пустые переменные пропущены: $empty_names"
+    if [[ -n "$dup_names" ]]; then
+      if [[ "$ALLOW_DUP" == "1" ]]; then
+        warn "CCR_POOL_ALLOW_DUPLICATES=1 — копии уже добавленного ключа оставлены: $dup_names"
+        warn "  запаса лимитов это не даёт: у копий одного ключа счётчик общий"
+      else
+        warn "значение совпало с ключом выше, в пул не попали: $dup_names"
+        warn "  копии одного ключа делят общий лимит — нужен ключ ДРУГОГО аккаунта"
+        warn "  оставить копии отдельными записями: CCR_POOL_ALLOW_DUPLICATES=1"
+      fi
+    fi
 
     managed_count="$(jq 'length' "$TMP/managed.json")"
     if (( managed_count == 0 )); then
