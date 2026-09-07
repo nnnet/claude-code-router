@@ -4,18 +4,18 @@
 # пересобирает пул ключей провайдера из окружения и перезапускает контейнер.
 #
 # Порядок работы:
-#   1. запрос каталога OpenRouter и вывод таблицы :free моделей (контекст и
-#      число параметров, вытащенное регулярками из description и id модели);
-#   2. сбор ключей из переменных окружения OPENROUTER_API_KEY* (если их нет —
+#   1. Запрос каталога OpenRouter через standalone-инструмент openrouter-free-models.sh
+#      (получение и сортировка :free моделей по размеру/контексту);
+#   2. Сбор ключей из переменных окружения OPENROUTER_API_KEY* (если их нет —
 #      пул не трогается);
-#   3. бэкап текущего конфига CCR;
-#   4. у OpenRouter-провайдера все ":free" модели заменяются свежим списком
+#   3. Бэкап текущего конфига CCR;
+#   4. У OpenRouter-провайдера все ":free" модели заменяются свежим списком
 #      (модели без ":free" сохраняются как есть — например upstage/solar-pro4),
 #      весь список сортируется по убыванию размера модели (число параметров,
 #      затем активных, затем контекст), а credentials пересобираются из
 #      окружения;
-#   5. конфиг сохраняется через management RPC;
-#   6. docker compose restart.
+#   5. Конфиг сохраняется через management RPC;
+#   6. Docker compose restart.
 #
 # Конфиг живёт в docker-томе, поэтому правится через RPC работающего
 # контейнера, а не файлом на диске. Если контейнер не поднят — скрипт
@@ -83,6 +83,12 @@ info()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m warn\033[0m %s\n' "$*" >&2; }
 die()   { printf '\033[1;31mОШИБКА:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# --- Путь к standalone-инструменту ------------------------------------------
+# Ищем openrouter-free-models.sh в той же директории, что и этот скрипт
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENROUTER_TOOL="$SCRIPT_DIR/openrouter-free-models.sh"
+[[ -x "$OPENROUTER_TOOL" ]] || die "Не найден или неисполняемый: $OPENROUTER_TOOL"
+
 # --- Предполётные проверки -------------------------------------------------
 
 for cmd in curl jq docker column; do
@@ -145,130 +151,26 @@ ccr_rpc() {
     --data-binary @"$body"
 }
 
-# --- jq-библиотека: размер модели ------------------------------------------
-#
-# Числа параметров отдельным полем в каталоге нет: architecture.parameters ==
-# null у всех 400+ моделей. Зато размер почти всегда написан словами в
-# description ("5.1B active parameters out of 124B total", "a 120B-parameter
-# model, activating just 12B parameters") и часто закодирован в самом id
-# ("...-550b-a55b" -> 550B всего / 55B активных, "...-31b" -> 31B).
-# Разбираем оба источника, description приоритетнее — он точнее: у
-# google/gemma-4-26b-a4b в описании 25.2B, а в id округлённые 26B.
-#
-# Покрытие на текущей выдаче: 15 из 16 :free моделей дают общее число
-# параметров, 11 из 16 — активное. Проприетарные модели (claude/gpt/gemini)
-# размер не публикуют вообще — у них останется прочерк.
-#
-# Про "Обучение". description в каталоге обрезан 180-330 символами, и фразы
-# вида "4.05T tokens" в него не попадают: на 428 моделей ноль совпадений.
-# Разбор оставлен — колонка заполнится сама, если OpenRouter начнёт отдавать
-# полный текст. Контекстное окно ("context window of up to 1M tokens") под
-# шаблон намеренно не подпадает, иначе колонка врала бы.
-read -r -d '' JQ_SIZE <<'JQEOF' || true
-# Множитель суффикса: "5.1B" -> 5.1 * 1e9.
-def _scale($u): {"K":1000,"M":1000000,"B":1000000000,"T":1000000000000}[$u | ascii_upcase] // 1;
-# Число из match с именованными группами n (величина) и u (суффикс).
-def _qty: (.captures | map({(.name): .string}) | add) as $c
-  | ($c.n | tonumber) * _scale($c.u);
-# Первое совпадение по списку шаблонов; null, если не совпал ни один.
-def _first($text; $pats): [ $pats[] as $p | $text | match($p; "ig") | _qty ] | first;
-
-def _active($text): _first($text; [
-  "(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])\\s*(?:of\\s+)?active(?:ly)?[\\s-]*(?:param|expert)",
-  "(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])\\s*active\\b",
-  "activat(?:ing|es|ed)\\s+(?:just\\s+|only\\s+)?(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])",
-  "active\\s+parameters?\\s*(?:of|:)?\\s*(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])"
-]);
-
-# Порядок шаблонов = приоритет. "out of 550B total" стоит первым, чтобы в MoE
-# описании "55B active parameters out of 550B total" не выиграло активное
-# число; общий "120B-parameter" идёт раньше голого "12B parameters".
-def _total($text): _first($text; [
-  "out\\s+of\\s+(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])\\s*total",
-  "(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])\\s*total",
-  "(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])[\\s-]*parameter",
-  "(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])[\\s-]*(?:dense|sparse|MoE|mixture)",
-  "(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[BM])\\s*param"
-]);
-
-# Объём обучения. Совпадения, рядом с которыми есть "context"/"window",
-# отбрасываются: это размер окна, а не корпуса.
-def _tokens($text): [ $text
-  | match("(?<n>[0-9]+(?:\\.[0-9]+)?)\\s*(?<u>[TBM])\\s*tokens?\\b"; "ig")
-  | select((($text[([(.offset - 90), 0] | max):(.offset + .length + 30)])
-            | test("context|window"; "i")) | not)
-  | _qty ] | first;
-
-# Размер из id: "qwen3-235b-a22b" -> 235B/22B, "gemma-4-31b-it" -> 31B.
-def _id_size($id): ($id | ascii_downcase) as $s
-  | ([$s | capture("(?<t>[0-9]+(?:\\.[0-9]+)?)b-a(?<a>[0-9]+(?:\\.[0-9]+)?)b")] | first) as $moe
-  | ([$s | capture("[-/](?<t>[0-9]+(?:\\.[0-9]+)?)b(?:[^a-z0-9]|$)")] | first) as $dense
-  | if $moe != null then
-      {total: (($moe.t | tonumber) * 1000000000), active: (($moe.a | tonumber) * 1000000000)}
-    elif $dense != null then
-      {total: (($dense.t | tonumber) * 1000000000), active: null}
-    else {total: null, active: null} end;
-
-# Применяется к записи каталога.
-def model_size: ((.description // "") | gsub("\\s+"; " ")) as $d
-  | _id_size(.id) as $from_id
-  | { ctx:    (.context_length // 0),
-      total:  (_total($d)  // $from_id.total),
-      active: (_active($d) // $from_id.active),
-      tokens: _tokens($d) };
-
-# Карта "id модели -> размеры" по всему каталогу.
-def size_map: reduce .data[] as $m ({}; .[$m.id] = ($m | model_size));
-
-# Ключ сортировки id по карте размеров: больше параметров -> больше активных ->
-# больше контекста -> id (чтобы порядок не плясал между запусками). Неизвестное
-# значение уходит в конец.
-def size_key($sizes): ($sizes[.] // {}) as $m
-  | [ -($m.total // -1), -($m.active // -1), -($m.ctx // -1), . ];
-
-def human: if . == null then "—"
-  elif . >= 1000000000000 then ((. / 100000000000 | round) / 10 | tostring) + "T"
-  elif . >= 1000000000    then ((. / 100000000    | round) / 10 | tostring) + "B"
-  elif . >= 1000000       then ((. / 100000       | round) / 10 | tostring) + "M"
-  else tostring end;
-JQEOF
-
-# --- 1. Каталог OpenRouter -------------------------------------------------
+# --- 1. Каталог OpenRouter через standalone-инструмент ---------------------
 
 info "Запрашиваю каталог моделей OpenRouter"
-curl -fsS --max-time 30 https://openrouter.ai/api/v1/models -o "$TMP/models.json" \
-  || die "не удалось получить каталог OpenRouter"
 
-# Карта размеров по всему каталогу: нужны и :free, и платные модели, которые
-# скрипт сохраняет как есть. По ней сортируется и таблица, и список в конфиге.
-jq "$JQ_SIZE"' size_map ' "$TMP/models.json" > "$TMP/sizes.json"
+# Получаем таблицу для вывода в консоль (используем дефолтную сортировку total,active,ctx)
+"$OPENROUTER_TOOL" --format table
 
-jq -r --slurpfile sizes "$TMP/sizes.json" "$JQ_SIZE"'
-  ($sizes[0]) as $s |
-  [ .data[] | select(.id | endswith(":free")) | .id ] |
-  sort_by(size_key($s)) |
-  ["ID модели", "Контекст (к)", "Параметры", "Активных", "Обучение"],
-  (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10]),
-  (.[] | . as $id | ($s[$id] // {}) as $m | [
-    $id,
-    (($m.ctx // 0) / 1024 | round | tostring + "k"),
-    ($m.total  | human),
-    ($m.active | human),
-    ($m.tokens | human)
-  ]) | @tsv' "$TMP/models.json" | column -t -s $'\t'
-
-# Порядок из таблицы сохраняется в конфиге: сначала самые крупные модели.
-jq --slurpfile sizes "$TMP/sizes.json" "$JQ_SIZE"'
-  ($sizes[0]) as $s
-  | [ .data[] | select(.id | endswith(":free")) | .id ] | sort_by(size_key($s))
-' "$TMP/models.json" > "$TMP/free.json"
-
-free_count="$(jq 'length' "$TMP/free.json")"
-# Пустой ответ означает сбой на стороне OpenRouter, а не «моделей больше нет».
-# Затирать этим рабочий конфиг нельзя.
+# Получаем отсортированные ID бесплатных моделей (JSON-массив)
+free_ids="$("$OPENROUTER_TOOL" --format json-ids --sort total,active,ctx)"
+free_count=$(jq 'length' <<< "$free_ids")
 (( free_count > 0 )) || die "OpenRouter вернул ноль бесплатных моделей — конфиг не тронут"
 printf '\n'
 info "Бесплатных моделей в выдаче: $free_count"
+
+# Получаем карту размеров для всех моделей каталога (нужна для сортировки всего списка в конфиге)
+sizes_json="$("$OPENROUTER_TOOL" --format sizes 2>/dev/null)"
+
+# Сохраняем для последующего использования в jq
+printf '%s\n' "$free_ids" > "$TMP/free.json"
+printf '%s\n' "$sizes_json" > "$TMP/sizes.json"
 
 # --- 2. Ключи из окружения --------------------------------------------------
 
@@ -371,18 +273,17 @@ info "Бэкап конфига: $backup"
 
 jq --arg re "$OPENROUTER_MATCH" --arg prefix "$MANAGED_PREFIX" \
    --slurpfile free "$TMP/free.json" --slurpfile managed "$TMP/managed.json" \
-   --slurpfile sizes "$TMP/sizes.json" "$JQ_SIZE"'
+   --slurpfile sizes "$TMP/sizes.json" '
   ($free[0]) as $fresh
   | ($managed[0]) as $pool
   | ($sizes[0]) as $s
   | .Providers |= map(
       if ((((.api_base_url // "") + " " + ((.capabilities // []) | map(.baseUrl // "") | join(" ")))) | test($re))
       then
-        # Весь список — по убыванию контекста; при равном контексте по id, чтобы
-        # порядок не плясал между запусками. Моделей, которых нет в каталоге
-        # OpenRouter, контекст неизвестен — они уходят в конец.
+        # Весь список — по убыванию размера (total, active, ctx); при равном — по id.
         .models = ((((.models // []) | map(select(endswith(":free") | not))) + $fresh)
-                   | sort_by(size_key($s)))
+                   | sort_by(($s[.] // {}) as $m
+                     | [ -($m.total // -1), -($m.active // -1), -($m.ctx // -1), . ]))
         # Пул пересобирается только из строк, которыми владеет скрипт (id "env-*");
         # добавленные руками credentials сохраняются.
         | (if ($pool | length) > 0
