@@ -1,0 +1,35 @@
+scripts/refresh-free-models.sh
+  s_023018aa190b37::t_febb8566b8296b 169
+  s_023018aa190b37::t_7b2c285dc47b38 162
+  s_023018aa190b37::t_4f525ae4eef6c9 7-9,11-12,17-18,86-91,154,157-161,163,168,170-174,276,283,285-286,391
+scripts/openrouter-free-models.sh
+  s_023018aa190b37::t_d84e27266f5bc6 50
+  s_023018aa190b37::t_b4521fcce0f8aa 262-264,266-269,303
+  s_023018aa190b37::t_3322fa96b20b90 248,250-261,265
+  s_023018aa190b37::t_572a0af29dd4b8 236-237,306
+  s_023018aa190b37::t_fa8add3c699a0b 311,348,359
+  s_023018aa190b37::t_99cf3171fa4aea 125-126
+  s_023018aa190b37::t_ddd2f18c4f56ac 1-8,10-35,37-49,51,56-90,96-124,127-181,183-235,238-246,304-305,308-309,327-341,345-346,351,356-357,360-369,371-374
+  s_023018aa190b37::t_898ea813b00e9e 247,307,326,347,350,358,370
+  s_023018aa190b37::t_6b22386a53c193 342-344
+  s_023018aa190b37::t_d986750e6f3be1 182
+  s_023018aa190b37::t_ff5425ffb52a77 9,36,52-55,91-95,270-302,310,312,314-325
+  s_023018aa190b37::t_7f4cc4dd7e06cf 352-355
+  s_023018aa190b37::t_2099185f454a2f 249,313,349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "5884e3e9a50d099105e64bb79528a614b5c7a2f9",
+  "prompts": {},
+  "sessions": {
+    "s_023018aa190b37": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c6a0e14-335c-43c0-86e8-2ed70277c100",
+        "model": "OpenRouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
