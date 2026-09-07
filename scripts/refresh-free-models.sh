@@ -10,7 +10,8 @@
 #   3. бэкап текущего конфига CCR;
 #   4. у OpenRouter-провайдера все ":free" модели заменяются свежим списком
 #      (модели без ":free" сохраняются как есть — например upstage/solar-pro4),
-#      а credentials пересобираются из окружения;
+#      весь список сортируется по убыванию контекста, а credentials
+#      пересобираются из окружения;
 #   5. конфиг сохраняется через management RPC;
 #   6. docker compose restart.
 #
@@ -163,6 +164,11 @@ jq -r '
 jq '[ .data[] | select(.id | endswith(":free")) ] | sort_by(-.context_length) | map(.id)' \
   "$TMP/models.json" > "$TMP/free.json"
 
+# Карта "id модели -> контекст" по всему каталогу. Нужна, чтобы в общий порядок
+# встали и платные модели, которые скрипт сохраняет как есть.
+jq 'reduce .data[] as $m ({}; .[$m.id] = ($m.context_length // 0))' \
+  "$TMP/models.json" > "$TMP/context.json"
+
 free_count="$(jq 'length' "$TMP/free.json")"
 # Пустой ответ означает сбой на стороне OpenRouter, а не «моделей больше нет».
 # Затирать этим рабочий конфиг нельзя.
@@ -270,13 +276,19 @@ info "Бэкап конфига: $backup"
 # --- 4. Замена :free моделей и пересборка пула ------------------------------
 
 jq --arg re "$OPENROUTER_MATCH" --arg prefix "$MANAGED_PREFIX" \
-   --slurpfile free "$TMP/free.json" --slurpfile managed "$TMP/managed.json" '
+   --slurpfile free "$TMP/free.json" --slurpfile managed "$TMP/managed.json" \
+   --slurpfile ctx "$TMP/context.json" '
   ($free[0]) as $fresh
   | ($managed[0]) as $pool
+  | ($ctx[0]) as $context
   | .Providers |= map(
       if ((((.api_base_url // "") + " " + ((.capabilities // []) | map(.baseUrl // "") | join(" ")))) | test($re))
       then
-        .models = (((.models // []) | map(select(endswith(":free") | not))) + $fresh)
+        # Весь список — по убыванию контекста; при равном контексте по id, чтобы
+        # порядок не плясал между запусками. Моделей, которых нет в каталоге
+        # OpenRouter, контекст неизвестен — они уходят в конец.
+        .models = ((((.models // []) | map(select(endswith(":free") | not))) + $fresh)
+                   | sort_by([-($context[.] // -1), .]))
         # Пул пересобирается только из строк, которыми владеет скрипт (id "env-*");
         # добавленные руками credentials сохраняются.
         | (if ($pool | length) > 0
