@@ -1,0 +1,21 @@
+scripts/refresh-free-models.sh
+  s_023018aa190b37::t_30f00464bccd06 167-171
+  s_023018aa190b37::t_dbd76482744793 13-14
+  s_023018aa190b37::t_3afb86a32e3209 279-280,283,287-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "7ccaa7638db1bcf4ec3e39d07b4041954f99aa1f",
+  "prompts": {},
+  "sessions": {
+    "s_023018aa190b37": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c6a0e14-335c-43c0-86e8-2ed70277c100",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
