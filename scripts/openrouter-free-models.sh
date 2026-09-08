@@ -269,12 +269,22 @@ def model_size: ((.description // "") | gsub("\\s+"; " ")) as $d
 # Map: id -> sizes for entire catalog (input is .data array)
 def size_map: reduce .[] as $m ({}; .[$m.id] = ($m | model_size));
 
-# Human readable: 1.2B, 550M, etc.
+# Thousands separator: 1024 -> "1 024", 46981 -> "46 981" (decimals untouched)
+def group3:
+  tostring
+  | split(".") as $p
+  | ($p[0] | gsub("(?<=\\d)(?=(?:\\d{3})+$)"; " "))
+    + (if ($p | length) > 1 then "." + $p[1] else "" end);
+
+# Number + unit, space-separated: 1024,"k" -> "1 024 k"; null -> "—"
+def unit($u): if . == null then "—" else (group3) + " " + $u end;
+
+# Human readable: 1.2 B, 550 M, etc.
 def human: if . == null then "—"
-  elif . >= 1000000000000 then ((. / 100000000000 | round) / 10 | tostring) + "T"
-  elif . >= 1000000000    then ((. / 100000000    | round) / 10 | tostring) + "B"
-  elif . >= 1000000       then ((. / 100000       | round) / 10 | tostring) + "M"
-  else tostring end;
+  elif . >= 1000000000000 then ((. / 100000000000 | round) / 10 | unit("T"))
+  elif . >= 1000000000    then ((. / 100000000    | round) / 10 | unit("B"))
+  elif . >= 1000000       then ((. / 100000       | round) / 10 | unit("M"))
+  else unit("") | rtrimstr(" ") end;
 
 # Empty metrics record — used when a model page yields nothing parseable
 def null_metrics:
@@ -302,6 +312,26 @@ run_jq() {
   local rc=$?
   rm -f "$tmp_jq"
   return $rc
+}
+
+# Render a tab-separated stream as an aligned table, right-aligning the numeric
+# columns given as a comma-separated list (column 1 — the model id — stays left).
+#
+# -c is required, not cosmetic: column pads only up to the output width, which
+# defaults to the terminal (80). This table is ~124 columns wide, so without an
+# explicit width the last column silently loses its padding and stays flush left
+# while every other column right-aligns.
+#
+# -R needs util-linux >= 2.30; older builds fall back to plain -t rather than
+# erroring out and losing the table entirely.
+TABLE_WIDTH=1000
+render_table() {
+  local right_cols="$1"
+  if column -t -s $'\t' -R "$right_cols" -c "$TABLE_WIDTH" </dev/null >/dev/null 2>&1; then
+    column -t -s $'\t' -R "$right_cols" -c "$TABLE_WIDTH"
+  else
+    column -t -s $'\t'
+  fi
 }
 
 # --- Endpoint metrics --------------------------------------------------------
@@ -561,15 +591,15 @@ case "$FORMAT" in
            | ($e[$id] // null_metrics) as $ep
            | [
                $id,
-               (($m.ctx // 0) / 1024 | round | tostring + "k"),
+               (($m.ctx // 0) / 1024 | round | unit("k")),
                ($m.total  | human),
                ($m.active | human),
-               (if $ep.latency_ms == null then "—" else "\($ep.latency_ms | round)ms" end),
-               (if $ep.throughput_tps == null then "—" else "\($ep.throughput_tps) t/s" end),
-               (if $ep.uptime_pct == null then "—" else "\($ep.uptime_pct)%" end)
+               (if $ep.latency_ms == null then "—" else ($ep.latency_ms | round | unit("ms")) end),
+               (if $ep.throughput_tps == null then "—" else ($ep.throughput_tps | unit("t/s")) end),
+               (if $ep.uptime_pct == null then "—" else ($ep.uptime_pct | unit("%")) end)
              ])
         | @tsv
-      ' "$CACHE_FILE" | column -t -s $'\t'
+      ' "$CACHE_FILE" | render_table 2,3,4,5,6,7
     else
       run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" '
         ($sizes) as $s
@@ -577,13 +607,13 @@ case "$FORMAT" in
           (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10]),
           ($ids[] as $id | ($s[$id] // {}) as $m | [
             $id,
-            (($m.ctx // 0) / 1024 | round | tostring + "k"),
+            (($m.ctx // 0) / 1024 | round | unit("k")),
             ($m.total  | human),
             ($m.active | human),
             ($m.tokens | human)
           ])
         | @tsv
-      ' "$CACHE_FILE" | column -t -s $'\t'
+      ' "$CACHE_FILE" | render_table 2,3,4,5
     fi
     ;;
 esac
