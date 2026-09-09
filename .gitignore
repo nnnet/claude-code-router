@@ -7,7 +7,8 @@ release
 .env.*
 !.env.example
 .idea
-.claude
+.claude/*
+!.claude/plans/
 .bot-gateway-state
 .agent-data
 .agent-console-remote-mode
