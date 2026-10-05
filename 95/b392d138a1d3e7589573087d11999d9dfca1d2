@@ -1,0 +1,19 @@
+scripts/openrouter-free-models.sh
+  s_c54f78648c44f4::t_7f2072b72d8c53 105,393-399,847,853-856,880-882
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "95b392d138a1d3e7589573087d11999d9dfca1d2",
+  "prompts": {},
+  "sessions": {
+    "s_c54f78648c44f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6caf91-545c-468b-a815-d9e993d20d71",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
