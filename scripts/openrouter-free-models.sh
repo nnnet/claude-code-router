@@ -6,6 +6,10 @@
 # sort by size (total params desc, active params desc, ctx desc),
 # and output in requested format.
 #
+# Every format also reports access for the requesting user: expiration date,
+# whether the model is open to this account, free-request quota left today,
+# per-minute cap and (with --with-endpoints) how many providers are up.
+#
 # Usage:
 #   openrouter-free-models.sh [--format table|json|ids] [--limit N] [--sort total,active,ctx]
 #                             [--with-endpoints] [--endpoints-concurrency N] [--cache-dir DIR]
@@ -23,6 +27,14 @@
 #   OPENROUTER_CACHE_MAX_AGE_EP   endpoints cache TTL in seconds (default 1800 = 30min)
 #   OPENROUTER_OFFLINE=1          use only cached data, fail if stale/missing
 #   OPENROUTER_REFRESH=1          force cache refresh
+#   OPENROUTER_KEY_ENV            NAME of the variable holding the API key
+#                                 (default OPENROUTER_API_KEY); empty variable =
+#                                 per-user checks are skipped, nothing is sent
+#   OPENROUTER_CACHE_MAX_AGE_USER per-user data cache TTL in seconds (default 120)
+#
+# The key value never enters the script: curl imports it from the environment
+# by name (--variable %NAME, curl >= 8.3). Only quota counters are cached —
+# /api/v1/key also returns "label", a fragment of the key itself.
 #
 # The script is self-contained and has no external dependencies beyond curl + jq.
 # It does NOT require docker, docker-compose, or any CCR configuration.
@@ -31,8 +43,13 @@ set -Eeuo pipefail
 
 # --- Configuration -----------------------------------------------------------
 
-CATALOG_URL="${OPENROUTER_CATALOG_URL:-https://openrouter.ai/api/v1/models}"
+API_BASE="${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}"
+CATALOG_URL="${OPENROUTER_CATALOG_URL:-$API_BASE/models}"
 PAGE_BASE_URL="${OPENROUTER_PAGE_BASE_URL:-https://openrouter.ai}"
+# The per-minute free cap is not in any API response, only in the docs source
+LIMITS_DOC_URL="${OPENROUTER_LIMITS_DOC_URL:-$PAGE_BASE_URL/docs/api/reference/limits.md}"
+KEY_ENV="${OPENROUTER_KEY_ENV:-OPENROUTER_API_KEY}"
+MAX_AGE_USER="${OPENROUTER_CACHE_MAX_AGE_USER:-120}"
 PAGE_USER_AGENT="${OPENROUTER_PAGE_UA:-Mozilla/5.0 (X11; Linux x86_64) openrouter-free-models.sh}"
 CACHE_DIR="${OPENROUTER_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/openrouter}"
 MAX_AGE="${OPENROUTER_CACHE_MAX_AGE:-86400}"
@@ -79,6 +96,15 @@ Environment variables:
   OPENROUTER_CACHE_MAX_AGE_EP    Endpoints cache TTL in seconds
   OPENROUTER_OFFLINE=1           Offline mode
   OPENROUTER_REFRESH=1           Force refresh
+  OPENROUTER_KEY_ENV             Name of the API key variable (default OPENROUTER_API_KEY)
+  OPENROUTER_CACHE_MAX_AGE_USER  Per-user data cache TTL in seconds (default 120)
+
+Access fields (every format): expiration date and days left, whether the model
+is open to this account (/api/v1/models/user), free requests used/left today
+(/api/v1/key), per-minute cap (docs), providers up (--with-endpoints).
+table: extra columns and an account line; json: "access" object per model;
+sizes: "access" on :free entries; ids/json-ids: stdout unchanged, access
+summary goes to stderr.
 
 Exit codes:
   0  Success
@@ -158,6 +184,9 @@ esac
 if ! [[ "$ENDPOINTS_CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
   die "Invalid --endpoints-concurrency: $ENDPOINTS_CONCURRENCY (must be positive integer)"
 fi
+
+# The name is spliced into a curl template, so it must be a plain identifier
+[[ "$KEY_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "Invalid OPENROUTER_KEY_ENV: $KEY_ENV"
 
 # --- Cache management --------------------------------------------------------
 
@@ -288,7 +317,65 @@ def human: if . == null then "—"
 
 # Empty metrics record — used when a model page yields nothing parseable
 def null_metrics:
-  { latency_ms: null, throughput_tps: null, uptime_pct: null, endpoint_count: 0 };
+  { latency_ms: null, throughput_tps: null, uptime_pct: null, endpoint_count: 0,
+    providers_up: null, providers_total: null };
+
+# Whole days from $now to the start of date $d ("2026-10-31"); negative = past
+def days_until($d; $now):
+  if $d == null then null
+  else (($d[0:10] + "T00:00:00Z" | fromdateiso8601) - $now) / 86400 | floor end;
+
+# Access record for catalog model $m. $u is the per-user object built by the
+# script (see fetch_user_access), $ep the endpoint metrics or null.
+# The verdict names the first reason the model cannot be used right now.
+def access($m; $u; $ep; $now):
+  ($m.id | endswith(":free")) as $free
+  | ($m.expiration_date // null) as $exp
+  | days_until($exp; $now) as $days
+  | (if $u.checked then ($u.open[$m.id] // false) else null end) as $open
+  | (if $free and $u.checked then $u.day else null end) as $day
+  | (if $ep == null or ($ep.providers_total // 0) == 0 then null
+     else {up: $ep.providers_up, total: $ep.providers_total} end) as $prov
+  | { expires: $exp,
+      days_left: $days,
+      open: $open,
+      requests_day: $day,
+      requests_minute: (if $free then $u.rpm else null end),
+      providers: $prov,
+      verdict: (
+        if $days != null and $days < 0 then "истекла"
+        elif $open == false then "закрыта"
+        elif $day != null and ($day.remaining // 1) <= 0 then "лимит"
+        elif $prov != null and $prov.up == 0 then "недоступна"
+        elif $prov != null and $prov.up < $prov.total then "частично"
+        elif $open == true then "открыта"
+        else $u.unknown end) };
+
+# Map: id -> access for every model in the catalog (input is .data array)
+def access_map($u; $eps; $now):
+  reduce .[] as $m ({}; .[$m.id] = access($m; $u; $eps[$m.id]; $now));
+
+# "2026-10-31 (26 д)" / "—"
+def expires_cell: if .expires == null then "—"
+  else .expires[0:10] + (if .days_left == null then "" else " (" + (.days_left | tostring) + " д)" end) end;
+
+# One line about the account, shared by the table footer and the stderr summary
+def account_line($u):
+  if $u.checked then
+    "Доступ (" + $u.key_env + "): free-запросов сегодня "
+    + (if $u.day == null then "—"
+       else ($u.day.used | tostring) + " из " + ($u.day.limit | tostring)
+            + ", осталось " + ($u.day.remaining | tostring) end)
+    + (if $u.rpm == null then "" else "; не больше " + ($u.rpm | tostring) + " в минуту" end)
+  else
+    "Доступ: " + $u.reason
+    + (if $u.rpm == null then ""
+       else "; free-моделям: " + ($u.rpm | tostring) + " в минуту"
+            + (if $u.rpd_low == null then ""
+               else ", в сутки " + ($u.rpd_low | tostring) + " (куплено меньше "
+                    + ($u.credits_threshold | tostring) + " кредитов) или "
+                    + ($u.rpd_high | tostring) end) end)
+  end;
 JQEOF
 
 # Helper to run jq with library + program from temp file
@@ -429,13 +516,45 @@ parse_page_metrics() {
   jq -c -n --argjson s "$stats_json" --argjson u "$uptime_json" '$s + $u'
 }
 
+# True when the file exists and is younger than TTL seconds (per its .meta stamp)
+cache_fresh() {
+  local file="$1" meta="$2" ttl="$3"
+  [[ -s "$file" && -f "$meta" ]] || return 1
+  (( $(date +%s) - $(cat "$meta" 2>/dev/null || echo 0) <= ttl ))
+}
+
+# Provider status from the JSON API: the page carries no status, the API does
+# (status 0 = serving). Prints {providers_up, providers_total}, nulls if unknown.
+fetch_endpoint_status() {
+  local model_id="$1"
+  local safe_id="${model_id//[\/:]/_}"
+  local api_file="$EP_CACHE_DIR/${safe_id}.api.json"
+  local api_meta="$EP_CACHE_DIR/${safe_id}.api.meta"
+
+  if [[ "$OFFLINE" != "1" ]] && { [[ "$REFRESH" == "1" ]] || ! cache_fresh "$api_file" "$api_meta" "$MAX_AGE_EP"; }; then
+    local tmp_file
+    tmp_file=$(mktemp "$EP_CACHE_DIR/${safe_id}.XXXXXX.api.tmp")
+    if curl -fsS --max-time 20 "$API_BASE/models/$model_id/endpoints" -o "$tmp_file" 2>/dev/null \
+       && jq -e '.data.endpoints | type == "array"' "$tmp_file" >/dev/null 2>&1; then
+      mv -f "$tmp_file" "$api_file"
+      date +%s > "$api_meta"
+    fi
+    rm -f "$tmp_file"
+  fi
+
+  jq -c '{providers_total: (.data.endpoints | length),
+          providers_up: ([.data.endpoints[] | select(.status == 0)] | length)}' \
+    "$api_file" 2>/dev/null || printf '{"providers_up":null,"providers_total":null}'
+}
+
 # Emit exactly one {model_id: metrics} object per model.
 fetch_metrics_for_model() {
   local model_id="$1"
-  local page_file metrics
+  local page_file metrics status
   page_file=$(fetch_model_page "$model_id")
   metrics=$(parse_page_metrics "$page_file")
-  jq -c -n --arg mid "$model_id" --argjson m "$metrics" '{($mid): $m}'
+  status=$(fetch_endpoint_status "$model_id")
+  jq -c -n --arg mid "$model_id" --argjson m "$metrics" --argjson s "$status" '{($mid): ($m + $s)}'
 }
 
 fetch_all_endpoints() {
@@ -472,6 +591,91 @@ fetch_all_endpoints() {
 
   rm -rf "$work_dir"
   rm -f "$ids_file" "$tmp_output"
+}
+
+# --- Per-user access ---------------------------------------------------------
+
+# Free-model caps from the docs source: {rpm, rpd_low, rpd_high, credits_threshold}.
+# The API reports the daily counter of a key, never the per-minute cap.
+fetch_doc_limits() {
+  local file="$CACHE_DIR/limits.json" meta="$CACHE_DIR/limits.meta" parsed
+  if [[ "$OFFLINE" != "1" ]] && { [[ "$REFRESH" == "1" ]] || ! cache_fresh "$file" "$meta" "$MAX_AGE"; }; then
+    parsed=$(curl -fsSL --max-time 20 "$LIMITS_DOC_URL" 2>/dev/null \
+      | grep -oE 'FREE_MODEL_[A-Z_]+ = [0-9]+' \
+      | jq -R -s -c '
+          [split("\n")[] | select(length > 0) | split(" = ") | {(.[0]): (.[1] | tonumber)}] | add // {}
+          | {rpm: .FREE_MODEL_RATE_LIMIT_RPM, rpd_low: .FREE_MODEL_NO_CREDITS_RPD,
+             rpd_high: .FREE_MODEL_HAS_CREDITS_RPD, credits_threshold: .FREE_MODEL_CREDITS_THRESHOLD}' \
+      2>/dev/null) || parsed=""
+    if jq -e '.rpm | numbers' <<<"$parsed" >/dev/null 2>&1; then
+      printf '%s\n' "$parsed" > "$file"
+      date +%s > "$meta"
+    fi
+  fi
+  cat "$file" 2>/dev/null \
+    || printf '{"rpm":null,"rpd_low":null,"rpd_high":null,"credits_threshold":null}\n'
+}
+
+# GET with the key that curl itself imports from the variable named KEY_ENV.
+# Body goes to $2; prints the HTTP status ("000" when the network failed).
+api_get_with_key() {
+  curl -sS --max-time 20 -o "$2" -w '%{http_code}' \
+    --variable "%$KEY_ENV" --expand-header "Authorization: Bearer {{$KEY_ENV}}" \
+    "$1" 2>/dev/null || true
+}
+
+# Per-user object: {checked, reason, unknown, open: {id: true}, day: {used, limit, remaining}}
+fetch_user_access() {
+  local file="$CACHE_DIR/user-$KEY_ENV.json" meta="$CACHE_DIR/user-$KEY_ENV.meta"
+  local none='{"checked":false,"open":{},"day":null}'
+
+  # Presence test only: the value is not stored or passed on from here
+  if [[ -z "${!KEY_ENV-}" ]]; then
+    jq -c --arg r "переменная $KEY_ENV пуста — лимиты и закрытость моделей не проверены" \
+      '. + {reason: $r, unknown: "нет ключа"}' <<<"$none"
+    return 0
+  fi
+
+  if [[ "$OFFLINE" == "1" ]]; then
+    if [[ -s "$file" ]]; then cat "$file"
+    else jq -c '. + {reason: "офлайн: данных о доступе в кэше нет"}' <<<"$none"; fi
+    return 0
+  fi
+  if [[ "$REFRESH" != "1" ]] && cache_fresh "$file" "$meta" "$MAX_AGE_USER"; then
+    cat "$file"
+    return 0
+  fi
+
+  local models_tmp key_tmp code_m code_k result=""
+  models_tmp=$(mktemp "${TMPDIR:-/tmp}/or_user_models.XXXXXX.json")
+  key_tmp=$(mktemp "${TMPDIR:-/tmp}/or_user_key.XXXXXX.json")
+  code_m=$(api_get_with_key "$API_BASE/models/user?output_modalities=all" "$models_tmp")
+  code_k=$(api_get_with_key "$API_BASE/key" "$key_tmp")
+  if [[ "$code_m" == 200 && "$code_k" == 200 ]]; then
+    # Only the counters survive: the key response also carries "label"
+    result=$(jq -n -c --slurpfile m "$models_tmp" --slurpfile k "$key_tmp" '
+      {checked: true,
+       open: ([$m[0].data[].id | {(.): true}] | add // {}),
+       day: ($k[0].data.free_model_daily_requests
+             | if . == null then null else {used, limit, remaining} end)}' 2>/dev/null) || result=""
+  fi
+  rm -f "$models_tmp" "$key_tmp"
+
+  if [[ -n "$result" ]]; then
+    printf '%s\n' "$result" > "$file"
+    date +%s > "$meta"
+    printf '%s\n' "$result"
+  elif [[ "$code_m" == 000 || "$code_k" == 000 ]] && [[ -s "$file" ]]; then
+    printf 'warn: using stale access cache (fetch failed)\n' >&2
+    cat "$file"
+  else
+    local reason="ошибка API: /models/user → $code_m, /key → $code_k"
+    case "$code_m$code_k" in
+      *401*|*403*) reason="ключ из $KEY_ENV отвергнут (/models/user → $code_m, /key → $code_k)" ;;
+      000*|*000)   reason="сеть недоступна, данных о доступе нет" ;;
+    esac
+    jq -c --arg r "$reason" '. + {reason: $r}' <<<"$none"
+  fi
 }
 
 # --- Build dynamic sort key from --sort spec ---------------------------------
@@ -547,48 +751,77 @@ if [[ $WITH_ENDPOINTS -eq 1 ]]; then
   fi
 fi
 
+# --- Access for the requesting user ------------------------------------------
+
+user_json=$(jq -c -n --argjson u "$(fetch_user_access)" --argjson l "$(fetch_doc_limits)" \
+  --arg k "$KEY_ENV" '{reason: null, unknown: "нет данных"} + $u + $l + {key_env: $k}')
+access_json=$(run_jq -c --argjson u "$user_json" --argjson eps "$endpoints_json" \
+  --argjson now "$(date +%s)" '.data | access_map($u; $eps; $now)' "$CACHE_FILE")
+
+# ids/json-ids are parsed as plain lists by callers, so access goes to stderr
+print_access_summary() {
+  run_jq -r -n --argjson ids "$free_ids" --argjson a "$access_json" --argjson u "$user_json" '
+    account_line($u),
+    ($ids[] as $id | $a[$id] as $x
+     | select(($x.verdict | IN("открыта", $u.unknown) | not) or $x.expires != null)
+     | "  " + $id + ": " + $x.verdict
+       + (if $x.expires == null then "" else ", срок: " + ($x | expires_cell) end))' /dev/null >&2
+}
+
 # --- Output ------------------------------------------------------------------
 
 case "$FORMAT" in
   ids)
     jq -r '.[]' <<< "$free_ids"
+    print_access_summary
     ;;
   json-ids)
     printf '%s\n' "$free_ids"
+    print_access_summary
     ;;
   json)
     # Full model objects for the free models, optionally with endpoint metrics
     if [[ $WITH_ENDPOINTS -eq 1 ]]; then
-      run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" '
+      run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
+             --argjson a "$access_json" '
         ($sizes) as $s
         | ($eps) as $e
         | [$ids[] as $id
            | .data[] | select(.id == $id)
            | . + {size: $s[$id]}
            | . + {endpoints: ($e[$id] // null_metrics)}
+           | . + {access: $a[$id]}
           ]
       ' "$CACHE_FILE"
     else
-      run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" '
+      run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson a "$access_json" '
         ($sizes) as $s
-        | [$ids[] as $id | .data[] | select(.id == $id) | . + {size: $s[$id]}]
+        | [$ids[] as $id | .data[] | select(.id == $id) | . + {size: $s[$id], access: $a[$id]}]
       ' "$CACHE_FILE"
     fi
     ;;
   sizes)
-    printf '%s\n' "$sizes_json"
+    # Callers read ctx/total/active/tokens by name; access is an added key.
+    # Free models only: zed.sh passes this map to python as one argv string,
+    # capped at 128 KB, and access for the whole catalog overflows it.
+    jq --argjson a "$access_json" \
+      'with_entries(if .key | endswith(":free") then .value += {access: $a[.key]} else . end)' \
+      <<< "$sizes_json"
     ;;
   table)
     # Pretty table with column
     if [[ $WITH_ENDPOINTS -eq 1 ]]; then
-      run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" '
+      run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
+                --argjson a "$access_json" '
         ($sizes) as $s
         | ($eps) as $e
-        | ["ID модели", "Контекст (к)", "Параметры", "Активных", "Latency", "Throughput", "Uptime"],
-          (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10, "-"*12, "-"*8]),
+        | ["ID модели", "Контекст (к)", "Параметры", "Активных", "Latency", "Throughput", "Uptime",
+           "Провайдеры", "Истекает", "Доступ"],
+          (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10, "-"*12, "-"*8, "-"*10, "-"*19, "-"*10]),
           ($ids[] as $id
            | ($s[$id] // {}) as $m
            | ($e[$id] // null_metrics) as $ep
+           | $a[$id] as $x
            | [
                $id,
                (($m.ctx // 0) / 1024 | round | unit("k")),
@@ -596,25 +829,32 @@ case "$FORMAT" in
                ($m.active | human),
                (if $ep.latency_ms == null then "—" else ($ep.latency_ms | round | unit("ms")) end),
                (if $ep.throughput_tps == null then "—" else ($ep.throughput_tps | unit("t/s")) end),
-               (if $ep.uptime_pct == null then "—" else ($ep.uptime_pct | unit("%")) end)
+               (if $ep.uptime_pct == null then "—" else ($ep.uptime_pct | unit("%")) end),
+               (if $x.providers == null then "—"
+                else ($x.providers.up | tostring) + "/" + ($x.providers.total | tostring) end),
+               ($x | expires_cell),
+               $x.verdict
              ])
         | @tsv
-      ' "$CACHE_FILE" | render_table 2,3,4,5,6,7
+      ' "$CACHE_FILE" | render_table 2,3,4,5,6,7,8
     else
-      run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" '
+      run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson a "$access_json" '
         ($sizes) as $s
-        | ["ID модели", "Контекст (к)", "Параметры", "Активных", "Обучение"],
-          (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10]),
-          ($ids[] as $id | ($s[$id] // {}) as $m | [
+        | ["ID модели", "Контекст (к)", "Параметры", "Активных", "Обучение", "Истекает", "Доступ"],
+          (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10, "-"*19, "-"*10]),
+          ($ids[] as $id | ($s[$id] // {}) as $m | $a[$id] as $x | [
             $id,
             (($m.ctx // 0) / 1024 | round | unit("k")),
             ($m.total  | human),
             ($m.active | human),
-            ($m.tokens | human)
+            ($m.tokens | human),
+            ($x | expires_cell),
+            $x.verdict
           ])
         | @tsv
       ' "$CACHE_FILE" | render_table 2,3,4,5
     fi
+    run_jq -r -n --argjson u "$user_json" '"", account_line($u)' /dev/null
     ;;
 esac
 
