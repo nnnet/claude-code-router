@@ -102,7 +102,7 @@ Environment variables:
 Access fields (every format): expiration date and days left, whether the model
 is open to this account (/api/v1/models/user), free requests used/left today
 (/api/v1/key), per-minute cap (docs), providers up (--with-endpoints).
-table: units in the column headers, bare numbers in cells, account line
+table: units in the second header row, bare numbers in cells, account line
 below; json: "access" object per model; sizes: "access" on :free entries;
 ids/json-ids: stdout unchanged, access summary goes to stderr.
 json/sizes pair every number with its unit: "ctx": 262144, "ctx_unit": "tokens".
@@ -389,6 +389,13 @@ def access($m; $u; $ep; $now):
 # Map: id -> access for every model in the catalog (input is .data array)
 def access_map($u; $eps; $now):
   reduce .[] as $m ({}; .[$m.id] = access($m; $u; $eps[$m.id]; $now));
+
+# Table header: names, then units on their own row so columns stay as narrow
+# as their data, then a rule as wide as the wider of the two
+def header_rows($names; $units):
+  $names, $units,
+  ([range($names | length) as $i | "-" * ([($names[$i] | length), ($units[$i] | length)] | max)]
+   | .[0] = "-" * 40);
 
 # One line about the account, shared by the table footer and the stderr summary
 def account_line($u):
@@ -837,17 +844,16 @@ case "$FORMAT" in
     ' /dev/null
     ;;
   table)
-    # Each column holds one fixed unit, named in the header, so cells are bare numbers
+    # Each column holds one fixed unit, named in the second header row, so cells are bare numbers
     if [[ $WITH_ENDPOINTS -eq 1 ]]; then
       run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
                 --argjson a "$access_json" '
         ($sizes) as $s
         | ($eps) as $e
-        | ["Model ID", "Context (Ki tokens)", "Params (B)", "Active (B)", "Latency (ms)",
-           "Throughput (tokens/s)", "Uptime (%)", "Providers (up/total)",
-           "Expires (YYYY-MM-DD)", "Left (days)", "Access"] as $h
-        | $h,
-          ([$h[] | "-" * ([length, 10] | max)] | .[0] = "-" * 40),
+        | ["Model ID", "Context", "Params", "Active", "Latency", "Throughput", "Uptime",
+           "Providers", "Expires", "Left", "Access"] as $h
+        | ["", "Ki tokens", "B", "B", "ms", "tokens/s", "%", "up/total", "YYYY-MM-DD", "days", ""] as $u
+        | header_rows($h; $u),
           ($ids[] as $id
            | ($s[$id] // {}) as $m
            | ($e[$id] // null_metrics) as $ep
@@ -871,10 +877,9 @@ case "$FORMAT" in
     else
       run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson a "$access_json" '
         ($sizes) as $s
-        | ["Model ID", "Context (Ki tokens)", "Params (B)", "Active (B)", "Training (T tokens)",
-           "Expires (YYYY-MM-DD)", "Left (days)", "Access"] as $h
-        | $h,
-          ([$h[] | "-" * ([length, 10] | max)] | .[0] = "-" * 40),
+        | ["Model ID", "Context", "Params", "Active", "Training", "Expires", "Left", "Access"] as $h
+        | ["", "Ki tokens", "B", "B", "T tokens", "YYYY-MM-DD", "days", ""] as $u
+        | header_rows($h; $u),
           ($ids[] as $id | ($s[$id] // {}) as $m | $a[$id] as $x | [
             $id,
             ($m.ctx | in_unit(1024)),
