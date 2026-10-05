@@ -44,6 +44,7 @@ graph:
   - {id: C1, needs: [B1],     parallel: "C2", status: "[x]", files: []}
   - {id: C2, needs: [B1],     parallel: "C1", status: "[x]", files: []}
   - {id: D1, needs: [C1, C2], parallel: "",   status: "[x]", files: [scripts/openrouter-free-models.sh]}
+  - {id: E1, needs: [D1],     parallel: "",   status: "[x]", files: [scripts/openrouter-free-models.sh]}
 ```
 
 ### A1 `research` — источники данных
@@ -79,3 +80,15 @@ graph:
 - приёмка: прод-вызов из запроса отрабатывает
 - заметки: сделано; старая версия — `scripts/openrouter-free-models.sh.bak-20261005`
   (вне git, как прочие `.bak` в `scripts/`; она же есть в истории)
+
+### E1 `english-units` — английский вывод и единицы измерения
+- выход: заголовки и значения вывода только на английском; в таблице единицы
+  в шапке, в ячейках голые числа; в json и sizes у каждого числа пара
+  `<key>_unit`
+- приёмка: `ids`, `json-ids` и старые поля `sizes` равны прежним; `zed.sh`
+  даёт тот же `settings.json`; ветки вердиктов на подделке API
+- заметки: сделано. Единицы цен взяты из документации; у `audio*` и
+  `image_output` единица там не названа — пары нет. `sizes` с единицами в
+  прежнем виде занял 118 КБ при пределе аргумента 128 КБ, поэтому отдаётся
+  компактным JSON: 90 КБ. Копия предыдущей версии —
+  `scripts/openrouter-free-models.sh.bak-20261005-0640`

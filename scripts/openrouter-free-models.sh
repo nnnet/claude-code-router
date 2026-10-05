@@ -102,9 +102,10 @@ Environment variables:
 Access fields (every format): expiration date and days left, whether the model
 is open to this account (/api/v1/models/user), free requests used/left today
 (/api/v1/key), per-minute cap (docs), providers up (--with-endpoints).
-table: extra columns and an account line; json: "access" object per model;
-sizes: "access" on :free entries; ids/json-ids: stdout unchanged, access
-summary goes to stderr.
+table: units in the column headers, bare numbers in cells, account line
+below; json: "access" object per model; sizes: "access" on :free entries;
+ids/json-ids: stdout unchanged, access summary goes to stderr.
+json/sizes pair every number with its unit: "ctx": 262144, "ctx_unit": "tokens".
 
 Exit codes:
   0  Success
@@ -315,6 +316,40 @@ def human: if . == null then "—"
   elif . >= 1000000       then ((. / 100000       | round) / 10 | unit("M"))
   else unit("") | rtrimstr(" ") end;
 
+# Table cell in a fixed unit named in the column header: value / $div,
+# one decimal (two below 1 so small models do not collapse to 0); null -> "—"
+def in_unit($div): if . == null then "—"
+  else (. / $div) as $v
+  | (if $v < 1 then ($v * 100 | round) / 100 else ($v * 10 | round) / 10 end) | group3 end;
+
+# Units of every numeric field the script emits, one place for all formats.
+# Machine formats get a "<key>_unit" pair next to each such key.
+def size_units: {ctx: "tokens", total: "parameters", active: "parameters", tokens: "tokens"};
+def endpoint_units: {latency_ms: "ms", throughput_tps: "tokens/s", uptime_pct: "%",
+                     endpoint_count: "endpoints", providers_up: "providers", providers_total: "providers"};
+def access_units: {expires: "date YYYY-MM-DD", days_left: "days", requests_minute: "requests/min"};
+# Catalog fields with a documented unit; prices without one stay unannotated
+def catalog_units: {context_length: "tokens", created: "unix seconds", expiration_date: "date YYYY-MM-DD"};
+def top_provider_units: {context_length: "tokens", max_completion_tokens: "tokens"};
+def pricing_units: {prompt: "USD/token", completion: "USD/token", internal_reasoning: "USD/token",
+                    input_cache_read: "USD/token", input_cache_write: "USD/token",
+                    request: "USD/request", image: "USD/image", web_search: "USD/search"};
+
+def with_units($units):
+  if type != "object" then .
+  else reduce ($units | to_entries[]) as $e (.;
+    if has($e.key) then .[$e.key + "_unit"] = $e.value else . end) end;
+
+def access_with_units:
+  with_units(access_units)
+  | if .requests_day == null then . else .requests_day += {unit: "requests/day"} end
+  | if .providers == null then . else .providers += {unit: "providers"} end;
+
+def catalog_with_units:
+  with_units(catalog_units)
+  | .top_provider |= with_units(top_provider_units)
+  | .pricing |= with_units(pricing_units);
+
 # Empty metrics record — used when a model page yields nothing parseable
 def null_metrics:
   { latency_ms: null, throughput_tps: null, uptime_pct: null, endpoint_count: 0,
@@ -343,37 +378,33 @@ def access($m; $u; $ep; $now):
       requests_minute: (if $free then $u.rpm else null end),
       providers: $prov,
       verdict: (
-        if $days != null and $days < 0 then "истекла"
-        elif $open == false then "закрыта"
-        elif $day != null and ($day.remaining // 1) <= 0 then "лимит"
-        elif $prov != null and $prov.up == 0 then "недоступна"
-        elif $prov != null and $prov.up < $prov.total then "частично"
-        elif $open == true then "открыта"
+        if $days != null and $days < 0 then "expired"
+        elif $open == false then "closed"
+        elif $day != null and ($day.remaining // 1) <= 0 then "quota"
+        elif $prov != null and $prov.up == 0 then "down"
+        elif $prov != null and $prov.up < $prov.total then "partial"
+        elif $open == true then "open"
         else $u.unknown end) };
 
 # Map: id -> access for every model in the catalog (input is .data array)
 def access_map($u; $eps; $now):
   reduce .[] as $m ({}; .[$m.id] = access($m; $u; $eps[$m.id]; $now));
 
-# "2026-10-31 (26 д)" / "—"
-def expires_cell: if .expires == null then "—"
-  else .expires[0:10] + (if .days_left == null then "" else " (" + (.days_left | tostring) + " д)" end) end;
-
 # One line about the account, shared by the table footer and the stderr summary
 def account_line($u):
   if $u.checked then
-    "Доступ (" + $u.key_env + "): free-запросов сегодня "
+    "Access (" + $u.key_env + "): free requests today "
     + (if $u.day == null then "—"
-       else ($u.day.used | tostring) + " из " + ($u.day.limit | tostring)
-            + ", осталось " + ($u.day.remaining | tostring) end)
-    + (if $u.rpm == null then "" else "; не больше " + ($u.rpm | tostring) + " в минуту" end)
+       else ($u.day.used | tostring) + " of " + ($u.day.limit | tostring)
+            + ", remaining " + ($u.day.remaining | tostring) end)
+    + (if $u.rpm == null then "" else "; max " + ($u.rpm | tostring) + " requests/min" end)
   else
-    "Доступ: " + $u.reason
+    "Access: " + $u.reason
     + (if $u.rpm == null then ""
-       else "; free-моделям: " + ($u.rpm | tostring) + " в минуту"
+       else "; free models: " + ($u.rpm | tostring) + " requests/min"
             + (if $u.rpd_low == null then ""
-               else ", в сутки " + ($u.rpd_low | tostring) + " (куплено меньше "
-                    + ($u.credits_threshold | tostring) + " кредитов) или "
+               else ", " + ($u.rpd_low | tostring) + " requests/day (under "
+                    + ($u.credits_threshold | tostring) + " credits purchased) or "
                     + ($u.rpd_high | tostring) end) end)
   end;
 JQEOF
@@ -631,14 +662,14 @@ fetch_user_access() {
 
   # Presence test only: the value is not stored or passed on from here
   if [[ -z "${!KEY_ENV-}" ]]; then
-    jq -c --arg r "переменная $KEY_ENV пуста — лимиты и закрытость моделей не проверены" \
-      '. + {reason: $r, unknown: "нет ключа"}' <<<"$none"
+    jq -c --arg r "variable $KEY_ENV is empty, quota and closed models not checked" \
+      '. + {reason: $r, unknown: "no-key"}' <<<"$none"
     return 0
   fi
 
   if [[ "$OFFLINE" == "1" ]]; then
     if [[ -s "$file" ]]; then cat "$file"
-    else jq -c '. + {reason: "офлайн: данных о доступе в кэше нет"}' <<<"$none"; fi
+    else jq -c '. + {reason: "offline, no access data in cache"}' <<<"$none"; fi
     return 0
   fi
   if [[ "$REFRESH" != "1" ]] && cache_fresh "$file" "$meta" "$MAX_AGE_USER"; then
@@ -669,10 +700,10 @@ fetch_user_access() {
     printf 'warn: using stale access cache (fetch failed)\n' >&2
     cat "$file"
   else
-    local reason="ошибка API: /models/user → $code_m, /key → $code_k"
+    local reason="API error: /models/user HTTP $code_m, /key HTTP $code_k"
     case "$code_m$code_k" in
-      *401*|*403*) reason="ключ из $KEY_ENV отвергнут (/models/user → $code_m, /key → $code_k)" ;;
-      000*|*000)   reason="сеть недоступна, данных о доступе нет" ;;
+      *401*|*403*) reason="key from $KEY_ENV rejected: /models/user HTTP $code_m, /key HTTP $code_k" ;;
+      000*|*000)   reason="network unavailable, no access data" ;;
     esac
     jq -c --arg r "$reason" '. + {reason: $r}' <<<"$none"
   fi
@@ -754,7 +785,7 @@ fi
 # --- Access for the requesting user ------------------------------------------
 
 user_json=$(jq -c -n --argjson u "$(fetch_user_access)" --argjson l "$(fetch_doc_limits)" \
-  --arg k "$KEY_ENV" '{reason: null, unknown: "нет данных"} + $u + $l + {key_env: $k}')
+  --arg k "$KEY_ENV" '{reason: null, unknown: "unknown"} + $u + $l + {key_env: $k}')
 access_json=$(run_jq -c --argjson u "$user_json" --argjson eps "$endpoints_json" \
   --argjson now "$(date +%s)" '.data | access_map($u; $eps; $now)' "$CACHE_FILE")
 
@@ -763,9 +794,10 @@ print_access_summary() {
   run_jq -r -n --argjson ids "$free_ids" --argjson a "$access_json" --argjson u "$user_json" '
     account_line($u),
     ($ids[] as $id | $a[$id] as $x
-     | select(($x.verdict | IN("открыта", $u.unknown) | not) or $x.expires != null)
+     | select(($x.verdict | IN("open", $u.unknown) | not) or $x.expires != null)
      | "  " + $id + ": " + $x.verdict
-       + (if $x.expires == null then "" else ", срок: " + ($x | expires_cell) end))' /dev/null >&2
+       + (if $x.expires == null then ""
+          else ", expires " + $x.expires[0:10] + " (" + ($x.days_left | tostring) + " days)" end))' /dev/null >&2
 }
 
 # --- Output ------------------------------------------------------------------
@@ -780,79 +812,81 @@ case "$FORMAT" in
     print_access_summary
     ;;
   json)
-    # Full model objects for the free models, optionally with endpoint metrics
-    if [[ $WITH_ENDPOINTS -eq 1 ]]; then
-      run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
-             --argjson a "$access_json" '
-        ($sizes) as $s
-        | ($eps) as $e
-        | [$ids[] as $id
-           | .data[] | select(.id == $id)
-           | . + {size: $s[$id]}
-           | . + {endpoints: ($e[$id] // null_metrics)}
-           | . + {access: $a[$id]}
-          ]
-      ' "$CACHE_FILE"
-    else
-      run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson a "$access_json" '
-        ($sizes) as $s
-        | [$ids[] as $id | .data[] | select(.id == $id) | . + {size: $s[$id], access: $a[$id]}]
-      ' "$CACHE_FILE"
-    fi
+    # Full model objects for the free models, every number paired with its unit
+    run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
+           --argjson a "$access_json" --argjson we "$WITH_ENDPOINTS" '
+      ($sizes) as $s
+      | ($eps) as $e
+      | [$ids[] as $id
+         | .data[] | select(.id == $id)
+         | catalog_with_units
+         | . + {size: ($s[$id] | with_units(size_units))}
+         | if $we == 1 then . + {endpoints: (($e[$id] // null_metrics) | with_units(endpoint_units))} else . end
+         | . + {access: ($a[$id] | access_with_units)}
+        ]
+    ' "$CACHE_FILE"
     ;;
   sizes)
-    # Callers read ctx/total/active/tokens by name; access is an added key.
-    # Free models only: zed.sh passes this map to python as one argv string,
-    # capped at 128 KB, and access for the whole catalog overflows it.
-    jq --argjson a "$access_json" \
-      'with_entries(if .key | endswith(":free") then .value += {access: $a[.key]} else . end)' \
-      <<< "$sizes_json"
+    # Callers read ctx/total/active/tokens by name; units and access are added
+    # keys. zed.sh passes this map to python as one argv string, capped at
+    # 128 KB: hence compact output, and access only on :free entries.
+    run_jq -n -c --argjson s "$sizes_json" --argjson a "$access_json" '
+      $s | with_entries(
+        .value |= with_units(size_units)
+        | if .key | endswith(":free") then .value += {access: ($a[.key] | access_with_units)} else . end)
+    ' /dev/null
     ;;
   table)
-    # Pretty table with column
+    # Each column holds one fixed unit, named in the header, so cells are bare numbers
     if [[ $WITH_ENDPOINTS -eq 1 ]]; then
       run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
                 --argjson a "$access_json" '
         ($sizes) as $s
         | ($eps) as $e
-        | ["ID модели", "Контекст (к)", "Параметры", "Активных", "Latency", "Throughput", "Uptime",
-           "Провайдеры", "Истекает", "Доступ"],
-          (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10, "-"*12, "-"*8, "-"*10, "-"*19, "-"*10]),
+        | ["Model ID", "Context (Ki tokens)", "Params (B)", "Active (B)", "Latency (ms)",
+           "Throughput (tokens/s)", "Uptime (%)", "Providers (up/total)",
+           "Expires (YYYY-MM-DD)", "Left (days)", "Access"] as $h
+        | $h,
+          ([$h[] | "-" * ([length, 10] | max)] | .[0] = "-" * 40),
           ($ids[] as $id
            | ($s[$id] // {}) as $m
            | ($e[$id] // null_metrics) as $ep
            | $a[$id] as $x
            | [
                $id,
-               (($m.ctx // 0) / 1024 | round | unit("k")),
-               ($m.total  | human),
-               ($m.active | human),
-               (if $ep.latency_ms == null then "—" else ($ep.latency_ms | round | unit("ms")) end),
-               (if $ep.throughput_tps == null then "—" else ($ep.throughput_tps | unit("t/s")) end),
-               (if $ep.uptime_pct == null then "—" else ($ep.uptime_pct | unit("%")) end),
+               ($m.ctx | in_unit(1024)),
+               ($m.total  | in_unit(1000000000)),
+               ($m.active | in_unit(1000000000)),
+               (if $ep.latency_ms == null then "—" else ($ep.latency_ms | round | group3) end),
+               (if $ep.throughput_tps == null then "—" else ($ep.throughput_tps | group3) end),
+               (if $ep.uptime_pct == null then "—" else ($ep.uptime_pct | group3) end),
                (if $x.providers == null then "—"
                 else ($x.providers.up | tostring) + "/" + ($x.providers.total | tostring) end),
-               ($x | expires_cell),
+               ($x.expires // "—" | .[0:10]),
+               (if $x.days_left == null then "—" else ($x.days_left | tostring) end),
                $x.verdict
              ])
         | @tsv
-      ' "$CACHE_FILE" | render_table 2,3,4,5,6,7,8
+      ' "$CACHE_FILE" | render_table 2,3,4,5,6,7,8,10
     else
       run_jq -r --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson a "$access_json" '
         ($sizes) as $s
-        | ["ID модели", "Контекст (к)", "Параметры", "Активных", "Обучение", "Истекает", "Доступ"],
-          (["-"*40, "-"*12, "-"*10, "-"*10, "-"*10, "-"*19, "-"*10]),
+        | ["Model ID", "Context (Ki tokens)", "Params (B)", "Active (B)", "Training (T tokens)",
+           "Expires (YYYY-MM-DD)", "Left (days)", "Access"] as $h
+        | $h,
+          ([$h[] | "-" * ([length, 10] | max)] | .[0] = "-" * 40),
           ($ids[] as $id | ($s[$id] // {}) as $m | $a[$id] as $x | [
             $id,
-            (($m.ctx // 0) / 1024 | round | unit("k")),
-            ($m.total  | human),
-            ($m.active | human),
-            ($m.tokens | human),
-            ($x | expires_cell),
+            ($m.ctx | in_unit(1024)),
+            ($m.total  | in_unit(1000000000)),
+            ($m.active | in_unit(1000000000)),
+            ($m.tokens | in_unit(1000000000000)),
+            ($x.expires // "—" | .[0:10]),
+            (if $x.days_left == null then "—" else ($x.days_left | tostring) end),
             $x.verdict
           ])
         | @tsv
-      ' "$CACHE_FILE" | render_table 2,3,4,5
+      ' "$CACHE_FILE" | render_table 2,3,4,5,7
     fi
     run_jq -r -n --argjson u "$user_json" '"", account_line($u)' /dev/null
     ;;
