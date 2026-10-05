@@ -1,0 +1,23 @@
+.claude/plans/2026-10-05T06-10__openrouter-free-access.md
+  s_c54f78648c44f4::t_53a432a0f36156 1-70
+  s_c54f78648c44f4::t_b1607d182f67bd 71-73
+  s_c54f78648c44f4::t_03c2caf5ab00e5 74-81
+scripts/openrouter-free-models.sh
+  s_c54f78648c44f4::t_efdc9aed47c4aa 9-12,30-37,46-47,49-52,99-107,188-190,320-378,519-549,553,556-557,596-680,754-770,776,780,785-786,793,797,799,804-809,814-815,818-820,824,832-836,839,841,843-845,850-852,857
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a693c7693272b4147791ebddea72f3cc1605886e",
+  "prompts": {},
+  "sessions": {
+    "s_c54f78648c44f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6caf91-545c-468b-a815-d9e993d20d71",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
