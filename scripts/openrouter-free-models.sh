@@ -105,6 +105,9 @@ is open to this account (/api/v1/models/user), free requests used/left today
 table: units in the second header row, bare numbers in cells, account line
 below; json: "access" object per model; sizes: "access" on :free entries;
 ids/json-ids: stdout unchanged, access summary goes to stderr.
+Account line ("Access (VAR): free requests today ...") in every format: below
+the table; on stderr for the rest; also as "_account" in sizes and
+"access.account" of each model in json.
 json/sizes pair every number with its unit: "ctx": 262144, "ctx_unit": "tokens".
 
 Exit codes:
@@ -414,6 +417,16 @@ def account_line($u):
                     + ($u.credits_threshold | tostring) + " credits purchased) or "
                     + ($u.rpd_high | tostring) end) end)
   end;
+
+# The same account facts as a machine-readable object, numbers paired with units
+def account_obj($u):
+  { key_env: $u.key_env,
+    checked: $u.checked,
+    reason: $u.reason,
+    requests_day: (if $u.day == null then null else $u.day + {unit: "requests/day"} end),
+    requests_minute: $u.rpm,
+    requests_minute_unit: "requests/min",
+    summary: account_line($u) };
 JQEOF
 
 # Helper to run jq with library + program from temp file
@@ -796,6 +809,11 @@ user_json=$(jq -c -n --argjson u "$(fetch_user_access)" --argjson l "$(fetch_doc
 access_json=$(run_jq -c --argjson u "$user_json" --argjson eps "$endpoints_json" \
   --argjson now "$(date +%s)" '.data | access_map($u; $eps; $now)' "$CACHE_FILE")
 
+# Machine formats keep stdout parseable, so the account line goes to stderr
+print_account_line() {
+  run_jq -r -n --argjson u "$user_json" 'account_line($u)' /dev/null >&2
+}
+
 # ids/json-ids are parsed as plain lists by callers, so access goes to stderr
 print_access_summary() {
   run_jq -r -n --argjson ids "$free_ids" --argjson a "$access_json" --argjson u "$user_json" '
@@ -821,7 +839,7 @@ case "$FORMAT" in
   json)
     # Full model objects for the free models, every number paired with its unit
     run_jq --argjson ids "$free_ids" --argjson sizes "$sizes_json" --argjson eps "$endpoints_json" \
-           --argjson a "$access_json" --argjson we "$WITH_ENDPOINTS" '
+           --argjson a "$access_json" --argjson we "$WITH_ENDPOINTS" --argjson u "$user_json" '
       ($sizes) as $s
       | ($eps) as $e
       | [$ids[] as $id
@@ -829,19 +847,23 @@ case "$FORMAT" in
          | catalog_with_units
          | . + {size: ($s[$id] | with_units(size_units))}
          | if $we == 1 then . + {endpoints: (($e[$id] // null_metrics) | with_units(endpoint_units))} else . end
-         | . + {access: ($a[$id] | access_with_units)}
+         | . + {access: ($a[$id] | access_with_units | .account = account_obj($u))}
         ]
     ' "$CACHE_FILE"
+    print_account_line
     ;;
   sizes)
     # Callers read ctx/total/active/tokens by name; units and access are added
     # keys. zed.sh passes this map to python as one argv string, capped at
     # 128 KB: hence compact output, and access only on :free entries.
-    run_jq -n -c --argjson s "$sizes_json" --argjson a "$access_json" '
-      $s | with_entries(
+    # _account cannot clash with a model id: ids always contain "/"
+    run_jq -n -c --argjson s "$sizes_json" --argjson a "$access_json" --argjson u "$user_json" '
+      ($s | with_entries(
         .value |= with_units(size_units)
-        | if .key | endswith(":free") then .value += {access: ($a[.key] | access_with_units)} else . end)
+        | if .key | endswith(":free") then .value += {access: ($a[.key] | access_with_units)} else . end))
+      + {_account: account_obj($u)}
     ' /dev/null
+    print_account_line
     ;;
   table)
     # Each column holds one fixed unit, named in the second header row, so cells are bare numbers
