@@ -11,7 +11,7 @@
 # per-minute cap and (with --with-endpoints) how many providers are up.
 #
 # Usage:
-#   openrouter-free-models.sh [--format table|json|ids] [--limit N] [--sort total,active,ctx]
+#   get-free-models-openrouter.sh [--format table|json|ids] [--limit N] [--sort total,active,ctx]
 #                             [--with-endpoints] [--endpoints-concurrency N] [--cache-dir DIR]
 #                             [--max-age SECONDS] [--max-age-endpoints SECONDS] [--refresh] [--offline]
 #
@@ -50,7 +50,7 @@ PAGE_BASE_URL="${OPENROUTER_PAGE_BASE_URL:-https://openrouter.ai}"
 LIMITS_DOC_URL="${OPENROUTER_LIMITS_DOC_URL:-$PAGE_BASE_URL/docs/api/reference/limits.md}"
 KEY_ENV="${OPENROUTER_KEY_ENV:-OPENROUTER_API_KEY}"
 MAX_AGE_USER="${OPENROUTER_CACHE_MAX_AGE_USER:-120}"
-PAGE_USER_AGENT="${OPENROUTER_PAGE_UA:-Mozilla/5.0 (X11; Linux x86_64) openrouter-free-models.sh}"
+PAGE_USER_AGENT="${OPENROUTER_PAGE_UA:-Mozilla/5.0 (X11; Linux x86_64) get-free-models-openrouter.sh}"
 CACHE_DIR="${OPENROUTER_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/openrouter}"
 MAX_AGE="${OPENROUTER_CACHE_MAX_AGE:-86400}"
 MAX_AGE_EP="${OPENROUTER_CACHE_MAX_AGE_EP:-1800}"
@@ -65,13 +65,13 @@ ENDPOINTS_CONCURRENCY=4
 # --- Helpers -----------------------------------------------------------------
 
 die() {
-  printf 'openrouter-free-models: %s\n' "$1" >&2
+  printf 'get-free-models-openrouter: %s\n' "$1" >&2
   exit "${2:-1}"
 }
 
 usage() {
   cat <<'EOF' >&2
-Usage: openrouter-free-models.sh [options]
+Usage: get-free-models-openrouter.sh [options]
 
 Options:
   --format FORMAT              Output format: table (default), json, ids, json-ids, sizes

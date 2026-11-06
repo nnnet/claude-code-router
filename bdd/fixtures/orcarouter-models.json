@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "id": "orcarouter/free",
+      "object": "model",
+      "name": "OrcaRouter Free",
+      "description": "Routes requests across free models with a 256K context.",
+      "context_length": 262144
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-free",
+      "object": "model",
+      "name": "DeepSeek V4 Flash (Free)",
+      "description": "284B total / 13B active parameters and 1M context.",
+      "context_length": 1048576,
+      "pricing": {"prompt": "0", "completion": "0"}
+    },
+    {
+      "id": "anthropic/claude-paid",
+      "object": "model",
+      "name": "Claude Paid",
+      "context_length": 200000,
+      "pricing": {"prompt": "0.000003", "completion": "0.000015"}
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "object": "list",
+  "data": [
+    {"id": "deepseek-v4-flash-free", "object": "model", "owned_by": "deepseek", "display_name": "DeepSeek V4 Flash Free"},
+    {"id": "glm-5.3-flash-free", "object": "model", "owned_by": "z-ai", "display_name": "GLM 5.3 Flash Free"},
+    {"id": "claude-sonnet-5", "object": "model", "owned_by": "anthropic", "display_name": "Claude Sonnet 5"}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "data": [
+    {
+      "id": "kilo-auto/free",
+      "name": "Auto Free",
+      "description": "Free virtual route with 256K context.",
+      "context_length": 262144,
+      "isFree": true,
+      "pricing": {"prompt": "0", "completion": "0"}
+    },
+    {
+      "id": "reflection/beam-free",
+      "name": "Beam 1.0 (free)",
+      "description": "30B total and 3B active parameters.",
+      "top_provider": {"context_length": 1048576},
+      "isFree": true,
+      "pricing": {"prompt": "0", "completion": "0"}
+    },
+    {
+      "id": "example/misleading:free",
+      "name": "Not free for this catalog",
+      "context_length": 128000,
+      "isFree": false,
+      "pricing": {"prompt": "1", "completion": "2"}
+    }
+  ]
+}
