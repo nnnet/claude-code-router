@@ -1,0 +1,45 @@
+bdd/fixtures/kilo-models.json
+  s_c73186b65300fe::t_07ed9ff950a884 1-27
+bdd/fixtures/orcarouter-models.json
+  s_c73186b65300fe::t_b7aff137e324fa 1-26
+bdd/fixtures/teamorouter-models.json
+  s_c73186b65300fe::t_57bdb93f63bc60 1-8
+openspec/changes/archive/2026-11-06-add-provider-free-model-scripts/.openspec.yaml
+  s_c73186b65300fe::t_a6169f04c86e91 1-2
+openspec/changes/archive/2026-11-06-add-provider-free-model-scripts/design.md
+  s_c73186b65300fe::t_8a2350e89e6a76 1-38
+openspec/changes/archive/2026-11-06-add-provider-free-model-scripts/proposal.md
+  s_c73186b65300fe::t_39fa119ec57843 1-25
+openspec/changes/archive/2026-11-06-add-provider-free-model-scripts/specs/provider-free-model-scripts/spec.md
+  s_c73186b65300fe::t_3a44a30343906f 1-47
+openspec/changes/archive/2026-11-06-add-provider-free-model-scripts/tasks.md
+  s_c73186b65300fe::t_add42dede3fbb0 1-16
+openspec/changes/archive/2026-11-06-refresh-free-models-claude-code-router/.openspec.yaml
+  s_c73186b65300fe::t_a03f6ebb547ed2 1-2
+openspec/changes/archive/2026-11-06-refresh-free-models-claude-code-router/design.md
+  s_c73186b65300fe::t_4b26d7c7d4ca60 1-40
+openspec/changes/archive/2026-11-06-refresh-free-models-claude-code-router/proposal.md
+  s_c73186b65300fe::t_c987c611a3f107 1-27
+openspec/changes/archive/2026-11-06-refresh-free-models-claude-code-router/specs/free-model-refresh/spec.md
+  s_c73186b65300fe::t_b4a46f5105a85a 1-47
+openspec/changes/archive/2026-11-06-refresh-free-models-claude-code-router/specs/provider-free-model-scripts/spec.md
+  s_c73186b65300fe::t_dedbe7c46627a9 1-8
+openspec/config.yaml
+  s_c73186b65300fe::t_2453f5427366fe 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "07b3e0a8ec8272ca8b091aa477978da21238b1d6",
+  "prompts": {},
+  "sessions": {
+    "s_c73186b65300fe": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b048-c165-7e90-b085-4eb909950a1c",
+        "model": "unknown"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
