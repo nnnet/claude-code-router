@@ -1,0 +1,33 @@
+scripts/openrouter-free-models.sh.bak-20261005
+  s_023018aa190b37::t_c6b97cb1de7ea7 1-621
+scripts/openrouter-free-models.sh.bak-20261005-0640
+  s_c54f78648c44f4::t_ebf6e129c4b24b 1-861
+scripts/openrouter-free-models.sh.bak-20261005-0645
+  s_c54f78648c44f4::t_a78d78175d26ef 1-895
+scripts/openrouter-free-models.sh.bak-20261005-0655
+  s_c54f78648c44f4::t_b42ece0332de53 1-900
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "92ed4740eb48c1649657a076caa51b98a21ccc53",
+  "prompts": {},
+  "sessions": {
+    "s_023018aa190b37": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c6a0e14-335c-43c0-86e8-2ed70277c100",
+        "model": "unknown"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    },
+    "s_c54f78648c44f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a6caf91-545c-468b-a815-d9e993d20d71",
+        "model": "unknown"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
